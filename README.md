@@ -1,4 +1,4 @@
-![assets/banner.png]()
+![assets/banner.png](https://github.com/timjonaswechler/tower_attack/blob/main/assets/banner.png)
 
 # Tower Attack
 
