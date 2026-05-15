@@ -8,7 +8,7 @@ pub struct Focusable;
 
 // Bevy's FreeCamera pitch is negative when looking down from the default view.
 const MIN_CAMERA_PITCH: f32 = -70.0 * PI / 180.0;
-const MAX_CAMERA_PITCH: f32 = -10.0 * PI / 180.0;
+const MAX_CAMERA_PITCH: f32 = -25.0 * PI / 180.0;
 
 // Plugin that spawns the camera.
 pub struct CameraPlugin;
@@ -49,7 +49,7 @@ impl Plugin for CameraSettingsPlugin {
         app.init_resource::<CameraFocus>()
             .add_systems(PostStartup, spawn_text)
             .add_systems(
-                Update,
+                PreUpdate,
                 (
                     update_camera_settings,
                     constrain_camera_angle,
@@ -59,7 +59,7 @@ impl Plugin for CameraSettingsPlugin {
                     .chain(),
             );
         #[cfg(debug_assertions)]
-        app.add_systems(Update, debug_center_ray);
+        app.add_systems(PostUpdate, debug_center_ray);
     }
 }
 

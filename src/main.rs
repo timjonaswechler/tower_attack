@@ -1,11 +1,12 @@
-mod camera;
+mod controll;
 
 use bevy::{
-    camera_controller::free_camera::FreeCameraPlugin, color::palettes::css::ORANGE, prelude::*,
+    camera_controller::free_camera::FreeCameraPlugin,
+    color::palettes::tailwind::*,
+    picking::{pointer::PointerInteraction, prelude::*},
+    prelude::*,
     render::view::Hdr,
 };
-
-use rand::random;
 
 fn main() {
     let mut app = App::new();
@@ -13,13 +14,34 @@ fn main() {
     app.add_plugins((
         DefaultPlugins,
         FreeCameraPlugin,
-        camera::CameraPlugin,
-        camera::CameraSettingsPlugin,
+        MeshPickingPlugin,
+        controll::game_camera::FreeCameraPlugin,
     ))
-    .add_systems(Startup, setup)
-    .add_systems(Update, example_control_system);
+    .add_systems(Startup, (setup, spawn_camera))
+    .add_systems(PostUpdate, draw_mesh_intersections);
 
     app.run();
+}
+
+fn spawn_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 2.5, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Hdr,
+        // Unfortunately, MSAA and HDR are not supported simultaneously under WebGL.
+        // Since this example uses HDR, we must disable MSAA for Wasm builds, at least
+        // until WebGPU is ready and no longer behind a feature flag in Web browsers.
+        #[cfg(target_arch = "wasm32")]
+        Msaa::Off,
+        // This component stores all camera settings and state, which is used by the FreeCameraPlugin to
+        // control it. These properties can be changed at runtime, but beware the controller system is
+        // constantly using and modifying those values unless the enabled field is false.
+        controll::game_camera::FreeCamera {
+            sensitivity: 0.2,
+            friction: 25.0,
+            ..default()
+        },
+    ));
 }
 
 /// set up a simple 3D scene
@@ -27,303 +49,79 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
+    _asset_server: Res<AssetServer>,
 ) {
-    let base_color = Color::srgb(0.9, 0.2, 0.3);
-    let icosphere_mesh = meshes.add(Sphere::new(0.9).mesh().ico(7).unwrap());
-
-    // Opaque
-    let opaque = commands
-        .spawn((
-            Mesh3d(icosphere_mesh.clone()),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color,
-                alpha_mode: AlphaMode::Opaque,
-                ..default()
-            })),
-            Transform::from_xyz(-4.0, 0.0, 0.0),
-            ExampleControls {
-                unlit: true,
-                color: true,
-            },
-        ))
-        .id();
-
-    // Blend
-    let blend = commands
-        .spawn((
-            Mesh3d(icosphere_mesh.clone()),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color,
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            })),
-            Transform::from_xyz(-2.0, 0.0, 0.0),
-            ExampleControls {
-                unlit: true,
-                color: true,
-            },
-        ))
-        .id();
-
-    // Premultiplied
-    let premultiplied = commands
-        .spawn((
-            Mesh3d(icosphere_mesh.clone()),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color,
-                alpha_mode: AlphaMode::Premultiplied,
-                ..default()
-            })),
-            Transform::from_xyz(0.0, 0.0, 0.0),
-            ExampleControls {
-                unlit: true,
-                color: true,
-            },
-        ))
-        .id();
-
-    // Add
-    let add = commands
-        .spawn((
-            Mesh3d(icosphere_mesh.clone()),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color,
-                alpha_mode: AlphaMode::Add,
-                ..default()
-            })),
-            Transform::from_xyz(2.0, 0.0, 0.0),
-            ExampleControls {
-                unlit: true,
-                color: true,
-            },
-        ))
-        .id();
-
-    // Multiply
-    let multiply = commands
-        .spawn((
-            Mesh3d(icosphere_mesh),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color,
-                alpha_mode: AlphaMode::Multiply,
-                ..default()
-            })),
-            Transform::from_xyz(4.0, 0.0, 0.0),
-            ExampleControls {
-                unlit: true,
-                color: true,
-            },
-        ))
-        .id();
-
     // Chessboard Plane
     let black_material = materials.add(Color::BLACK);
     let white_material = materials.add(Color::WHITE);
+    let hover_matl = materials.add(Color::from(CYAN_300));
+    let pressed_matl = materials.add(Color::from(YELLOW_300));
+    let border_material = materials.add(Color::from(RED_600));
+    let border_material2 = materials.add(Color::from(RED_900));
 
     let tile_size = 2.0;
-    let board_radius = 3;
+    let board_size = 8;
 
     let plane_mesh = meshes.add(Plane3d::default().mesh().size(tile_size, tile_size));
 
-    for x in -board_radius..=board_radius {
-        for z in -board_radius..=board_radius {
-            commands.spawn((
-                Mesh3d(plane_mesh.clone()),
-                MeshMaterial3d(if (x + z) % 2 == 0 {
-                    black_material.clone()
-                } else {
-                    white_material.clone()
-                }),
-                Transform::from_xyz(x as f32 * tile_size, -1.0, z as f32 * tile_size),
-                ExampleControls {
-                    unlit: false,
-                    color: true,
-                },
-                camera::Focusable,
-            ));
+    for i in 0..board_size * board_size {
+        let x = i % board_size;
+        let z = i / board_size;
+        let is_border = x == 0 || x == board_size - 1 || z == 0 || z == board_size - 1;
+        let odd = (x + z) % 2 == 0;
+        let material = if is_border && !odd {
+            border_material.clone()
+        } else if is_border && odd {
+            border_material2.clone()
+        } else if odd {
+            black_material.clone()
+        } else {
+            white_material.clone()
+        };
+
+        let mut plane = commands.spawn((
+            Mesh3d(plane_mesh.clone()),
+            MeshMaterial3d(material.clone()),
+            Transform::from_xyz(x as f32 * tile_size, -1.0, z as f32 * tile_size),
+            controll::component::Focusable,
+        ));
+
+        if is_border {
+            plane.insert(controll::component::Border);
+        } else {
+            plane
+                .observe(update_material_on::<Pointer<Over>>(hover_matl.clone()))
+                .observe(update_material_on::<Pointer<Press>>(pressed_matl.clone()))
+                .observe(update_material_on::<Pointer<Release>>(hover_matl.clone()))
+                .observe(update_material_on::<Pointer<Out>>(material));
         }
     }
 
     // Light
     commands.spawn((PointLight::default(), Transform::from_xyz(4.0, 8.0, 4.0)));
-
-    // Controls Text
-
-    // We need the full version of this font so we can use box drawing characters.
-    let text_style = TextFont {
-        font: asset_server.load("fonts/FiraMono-Medium.ttf"),
-        ..default()
-    };
-
-    let label_text_style = (text_style.clone(), TextColor(ORANGE.into()));
-
-    commands.spawn((Text::new("Up / Down — Increase / Decrease Alpha\nLeft / Right — Rotate Camera\nH - Toggle HDR\nSpacebar — Toggle Unlit\nC — Randomize Colors"),
-            text_style.clone(),
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(12),
-            left: px(12),
-            ..default()
-        })
-    );
-
-    commands.spawn((
-        Text::default(),
-        text_style,
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(12),
-            right: px(12),
-            ..default()
-        },
-        ExampleDisplay,
-    ));
-
-    let mut label = |entity: Entity, label: &str| {
-        commands.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                ..default()
-            },
-            ExampleLabel { entity },
-            children![(
-                Text::new(label),
-                label_text_style.clone(),
-                Node {
-                    position_type: PositionType::Absolute,
-                    bottom: Val::ZERO,
-                    ..default()
-                },
-                TextLayout::default().with_no_wrap(),
-            )],
-        ));
-    };
-
-    label(opaque, "┌─ Opaque\n│\n│\n│\n│");
-    label(blend, "┌─ Blend\n│\n│\n│");
-    label(premultiplied, "┌─ Premultiplied\n│\n│");
-    label(add, "┌─ Add\n│");
-    label(multiply, "┌─ Multiply");
 }
 
-#[derive(Component)]
-struct ExampleControls {
-    unlit: bool,
-    color: bool,
-}
-
-#[derive(Component)]
-struct ExampleLabel {
-    entity: Entity,
-}
-
-struct ExampleState {
-    alpha: f32,
-    unlit: bool,
-}
-
-#[derive(Component)]
-struct ExampleDisplay;
-
-impl Default for ExampleState {
-    fn default() -> Self {
-        ExampleState {
-            alpha: 0.9,
-            unlit: false,
+fn update_material_on<E: EntityEvent>(
+    new_material: Handle<StandardMaterial>,
+) -> impl Fn(On<E>, Query<&mut MeshMaterial3d<StandardMaterial>>) {
+    // An observer closure that captures `new_material`. We do this to avoid needing to write four
+    // versions of this observer, each triggered by a different event and with a different hardcoded
+    // material. Instead, the event type is a generic, and the material is passed in.
+    move |event, mut query| {
+        if let Ok(mut material) = query.get_mut(event.event_target()) {
+            material.0 = new_material.clone();
         }
     }
 }
 
-fn example_control_system(
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    controllable: Query<(&MeshMaterial3d<StandardMaterial>, &ExampleControls)>,
-    camera: Single<
-        (
-            Entity,
-            &mut Camera,
-            &mut Transform,
-            &GlobalTransform,
-            Has<Hdr>,
-        ),
-        With<Camera3d>,
-    >,
-    mut labels: Query<(&mut Node, &ExampleLabel)>,
-    mut display: Single<&mut Text, With<ExampleDisplay>>,
-    labeled: Query<&GlobalTransform>,
-    mut state: Local<ExampleState>,
-    time: Res<Time>,
-    input: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
-) {
-    if input.pressed(KeyCode::ArrowUp) {
-        state.alpha = (state.alpha + time.delta_secs()).min(1.0);
-    } else if input.pressed(KeyCode::ArrowDown) {
-        state.alpha = (state.alpha - time.delta_secs()).max(0.0);
+/// A system that draws hit indicators for every pointer.
+fn draw_mesh_intersections(pointers: Query<&PointerInteraction>, mut gizmos: Gizmos) {
+    for (point, normal) in pointers
+        .iter()
+        .filter_map(|interaction| interaction.get_nearest_hit())
+        .filter_map(|(_entity, hit)| hit.position.zip(hit.normal))
+    {
+        gizmos.sphere(point, 0.05, RED_500);
+        gizmos.arrow(point, point + normal.normalize() * 0.5, PINK_100);
     }
-
-    if input.just_pressed(KeyCode::Space) {
-        state.unlit = !state.unlit;
-    }
-
-    let randomize_colors = input.just_pressed(KeyCode::KeyC);
-
-    for (material_handle, controls) in &controllable {
-        let material = materials.get_mut(material_handle).unwrap();
-
-        if controls.color && randomize_colors {
-            material.base_color = Srgba {
-                red: random(),
-                green: random(),
-                blue: random(),
-                alpha: state.alpha,
-            }
-            .into();
-        } else {
-            material.base_color.set_alpha(state.alpha);
-        }
-
-        if controls.unlit {
-            material.unlit = state.unlit;
-        }
-    }
-
-    let (entity, camera, mut camera_transform, camera_global_transform, hdr) = camera.into_inner();
-
-    if input.just_pressed(KeyCode::KeyH) {
-        if hdr {
-            commands.entity(entity).remove::<Hdr>();
-        } else {
-            commands.entity(entity).insert(Hdr);
-        }
-    }
-
-    let rotation = if input.pressed(KeyCode::ArrowLeft) {
-        time.delta_secs()
-    } else if input.pressed(KeyCode::ArrowRight) {
-        -time.delta_secs()
-    } else {
-        0.0
-    };
-
-    camera_transform.rotate_around(Vec3::ZERO, Quat::from_rotation_y(rotation));
-
-    for (mut node, label) in &mut labels {
-        let world_position = labeled.get(label.entity).unwrap().translation() + Vec3::Y;
-
-        let Ok(viewport_position) =
-            camera.world_to_viewport(camera_global_transform, world_position)
-        else {
-            node.display = Display::None;
-            continue;
-        };
-        node.top = px(viewport_position.y);
-        node.left = px(viewport_position.x);
-    }
-
-    display.0 = format!(
-        "  HDR: {}\nAlpha: {:.2}",
-        if hdr { "ON " } else { "OFF" },
-        state.alpha
-    );
 }
